@@ -3,13 +3,44 @@ import sqlite3
 import requests
 import os
 from datetime import datetime, timezone, timedelta
-import google.generativeai as genai
+from openai import OpenAI
 
 # 設定とAPIキー
 st.set_page_config(page_title="マイ乗換案内AI", page_icon="🚇", layout="centered")
 ODPT_API_KEY = os.environ.get("ODPT_API_KEY")
-genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
-model = genai.GenerativeModel('gemini-2.5-flash')
+
+# xAI OpenAI互換 API。デフォルトモデルは公式の現行高速モデル grok-4.3
+# https://docs.x.ai/developers/models/grok-4.3
+# （旧 grok-4-fast-* は 2026-05-15 以降 grok-4.3 へ誘導）
+XAI_BASE_URL = "https://api.x.ai/v1"
+DEFAULT_XAI_MODEL = "grok-4.3"
+
+
+def _config_value(name, default=None):
+    """環境変数を優先し、Streamlit secrets も受け付ける。"""
+    env_value = os.environ.get(name)
+    if env_value:
+        return env_value
+    try:
+        secrets_value = st.secrets[name]
+        if secrets_value:
+            return secrets_value
+    except Exception:
+        pass
+    return default
+
+
+XAI_API_KEY = _config_value("XAI_API_KEY")
+XAI_MODEL = _config_value("XAI_MODEL", DEFAULT_XAI_MODEL)
+xai_client = OpenAI(api_key=XAI_API_KEY, base_url=XAI_BASE_URL)
+
+
+def generate_ai_text(prompt):
+    response = xai_client.chat.completions.create(
+        model=XAI_MODEL,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return response.choices[0].message.content or ""
 
 # JR路線のキーワード
 jr_keywords = ["JR", "総武", "山手", "中央", "京浜東北", "横須賀", "東海道", "常磐", "埼京", "京葉", "武蔵野", "南武", "横浜"]
@@ -39,7 +70,7 @@ with st.sidebar:
                 res = requests.get("https://api.odpt.org/api/v4/odpt:TrainInformation", params={"acl:consumerKey": ODPT_API_KEY, "odpt:operator": "odpt.Operator:JR-East"})
                 delayed = [f"・{info.get('odpt:railway', '').split('.')[-1]}: {info.get('odpt:trainInformationText', {}).get('ja', '')}" for info in res.json() if "平常" not in info.get('odpt:trainInformationText', {}).get('ja', '')]
                 summary = "\n".join(delayed) if delayed else "全線平常運転です。"
-                ai_res = model.generate_content(f"JR運行状況を駅員風に：{summary}").text
+                ai_res = generate_ai_text(f"JR運行状況を駅員風に：{summary}")
                 st.success(ai_res)
             except:
                 st.error("情報取得エラー")
@@ -226,7 +257,7 @@ elif st.session_state.step == 3:
                 st.markdown(final_html, unsafe_allow_html=True)
                 
             with st.spinner("AIが案内を作成中..."):
-                ans = model.generate_content(f"{st.session_state.station}駅 {rw['title']} {d['name']}方面。現在{now_str}。データ:{next_trains}。駅員風に案内して。").text
+                ans = generate_ai_text(f"{st.session_state.station}駅 {rw['title']} {d['name']}方面。現在{now_str}。データ:{next_trains}。駅員風に案内して。")
                 st.success(ans)
 
     if st.button("⬅️ 路線を選び直す"):
